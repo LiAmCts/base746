@@ -1,82 +1,150 @@
 #include "lvgl.h"
 
-static void event_handler(lv_event_t * e)
-{
-    lv_event_code_t code = lv_event_get_code(e);
-
-    if(code == LV_EVENT_CLICKED) {
-        LV_LOG_USER("Clicked");
-    }
-    else if(code == LV_EVENT_VALUE_CHANGED) {
-        LV_LOG_USER("Toggled");
-    }
-}
+static lv_obj_t * timeLabel;
+static lv_obj_t * statusLabel;
+static lv_obj_t * frameLabel;
 
 void testLvgl()
 {
-  // Initialisations générales
-  lv_obj_t * label;
+  lv_obj_t * screen = lv_screen_active();
+  lv_obj_clean(screen);
+  lv_obj_set_style_bg_color(screen, lv_color_white(), 0);
 
-  lv_obj_t * btn1 = lv_button_create(lv_screen_active());
-  lv_obj_add_event_cb(btn1, event_handler, LV_EVENT_ALL, NULL);
-  lv_obj_align(btn1, LV_ALIGN_CENTER, 0, -40);
-  lv_obj_remove_flag(btn1, LV_OBJ_FLAG_PRESS_LOCK);
+  timeLabel = lv_label_create(screen);
+  lv_label_set_text(timeLabel, "--:--:--");
+  lv_obj_set_style_text_color(timeLabel, lv_color_black(), 0);
+#if LV_FONT_MONTSERRAT_48
+  lv_obj_set_style_text_font(timeLabel, &lv_font_montserrat_48, 0);
+#endif
+  lv_obj_align(timeLabel, LV_ALIGN_CENTER, 0, -45);
 
-  label = lv_label_create(btn1);
-  lv_label_set_text(label, "Button");
-  lv_obj_center(label);
+  statusLabel = lv_label_create(screen);
+  lv_label_set_text(statusLabel, "Attente des trames GPS...");
+  lv_obj_set_width(statusLabel, 440);
+  lv_obj_set_style_text_color(statusLabel, lv_color_hex(0x303030), 0);
+  lv_obj_set_style_text_align(statusLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(statusLabel, LV_ALIGN_CENTER, 0, 20);
 
-  lv_obj_t * btn2 = lv_button_create(lv_screen_active());
-  lv_obj_add_event_cb(btn2, event_handler, LV_EVENT_ALL, NULL);
-  lv_obj_align(btn2, LV_ALIGN_CENTER, 0, 40);
-  lv_obj_add_flag(btn2, LV_OBJ_FLAG_CHECKABLE);
-  lv_obj_set_height(btn2, LV_SIZE_CONTENT);
-
-  label = lv_label_create(btn2);
-  lv_label_set_text(label, "Toggle");
-  lv_obj_center(label);
+  frameLabel = lv_label_create(screen);
+  lv_label_set_text(frameLabel, "-");
+  lv_label_set_long_mode(frameLabel, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(frameLabel, 440);
+  lv_obj_set_style_text_color(frameLabel, lv_color_black(), 0);
+  lv_obj_set_style_text_align(frameLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(frameLabel, LV_ALIGN_BOTTOM_MID, 0, -28);
 }
 
 #ifdef ARDUINO
 
 #include "lvglDrivers.h"
+#include <cstring>
+#include <cstdio>
 
-// à décommenter pour tester la démo
-// #include "demos/lv_demos.h"
+static constexpr uint32_t GPS_BAUDRATE = 9600;
+static constexpr int GPS_LOCAL_UTC_OFFSET_HOURS = 2;
+
+// UART7 de la DISCO-F746NG : PF6 = RX7, PF7 = TX7.
+static HardwareSerial gpsSerial(PF6, PF7);
+static char gpsLine[128];
+static size_t gpsLineLen = 0;
+
+static bool traiterTrameGps(const char * trame)
+{
+  if (std::strncmp(trame, "$GPRMC,", 7) != 0 && std::strncmp(trame, "$GNRMC,", 7) != 0) {
+    return false;
+  }
+
+  const char * heureUtc = trame + 7;
+  for (int i = 0; i < 6; i++) {
+    if (heureUtc[i] < '0' || heureUtc[i] > '9') {
+      return false;
+    }
+  }
+
+  int heure = (heureUtc[0] - '0') * 10 + (heureUtc[1] - '0');
+  int minute = (heureUtc[2] - '0') * 10 + (heureUtc[3] - '0');
+  int seconde = (heureUtc[4] - '0') * 10 + (heureUtc[5] - '0');
+
+  heure += GPS_LOCAL_UTC_OFFSET_HOURS;
+  if (heure >= 24) {
+    heure -= 24;
+  }
+
+  const char * virguleApresHeure = std::strchr(heureUtc, ',');
+  char statutGps = (virguleApresHeure != nullptr) ? virguleApresHeure[1] : 'V';
+
+  char texteHeure[16];
+  std::snprintf(texteHeure, sizeof(texteHeure), "%02d:%02d:%02d", heure, minute, seconde);
+
+  if (lvglLock(pdMS_TO_TICKS(20))) {
+    lv_label_set_text(timeLabel, texteHeure);
+    lv_label_set_text(statusLabel, (statutGps == 'A') ? "Fix GPS valide" : "Fix GPS non valide");
+    lvglUnlock();
+  }
+
+  return true;
+}
 
 void mySetup()
 {
-  // à décommenter pour tester la démo
-  // lv_demo_widgets();
-
   // Initialisations générales
   testLvgl();
+
+  // Initialisation de l'UART relié au module GPS.
+  gpsSerial.begin(GPS_BAUDRATE);
 }
 
 void loop()
 {
-  // Inactif (pour mise en veille du processeur)
+  // Inactif : FreeRTOS exécute les tâches.
 }
 
 void myTask(void *pvParameters)
 {
-  // Init
+  (void)pvParameters;
+
+  // Initialisation de la temporisation de la tâche.
   TickType_t xLastWakeTime;
-  // Lecture du nombre de ticks quand la tâche débute
   xLastWakeTime = xTaskGetTickCount();
+
   while (1)
   {
-    // Loop
+    // Lecture des caractères reçus depuis le GPS.
+    while (gpsSerial.available() > 0) {
+      char c = static_cast<char>(gpsSerial.read());
 
-    // Endort la tâche pendant le temps restant par rapport au réveil,
-    // ici 200ms, donc la tâche s'effectue toutes les 200ms
-    vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(200)); // toutes les 200 ms
+      if (c == '\r') {
+        continue;
+      }
+
+      // Une trame NMEA complète se termine par un retour ligne.
+      if (c == '\n') {
+        gpsLine[gpsLineLen] = '\0';
+        Serial.println(gpsLine);
+
+        if (lvglLock(pdMS_TO_TICKS(20))) {
+          lv_label_set_text(frameLabel, gpsLine);
+          lvglUnlock();
+        }
+
+        traiterTrameGps(gpsLine);
+        gpsLineLen = 0;
+      }
+      else if (gpsLineLen < sizeof(gpsLine) - 1) {
+        gpsLine[gpsLineLen++] = c;
+      }
+      else {
+        gpsLineLen = 0;
+      }
+    }
+
+    // Endort la tâche pour obtenir une exécution toutes les 200 ms.
+    vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(200));
   }
 }
 
 #else
 
-#include "lvgl.h"
 #include "app_hal.h"
 #include <cstdio>
 
