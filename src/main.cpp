@@ -1,8 +1,48 @@
 #include "lvgl.h"
+#include <cmath>
+
+static constexpr int CLOCK_SIZE = 76;
+static constexpr int CLOCK_CENTER = CLOCK_SIZE / 2;
+static constexpr float PI = 3.14159265f;
 
 static lv_obj_t * timeLabel;
 static lv_obj_t * statusLabel;
 static lv_obj_t * frameLabel;
+static lv_obj_t * analogClock;
+static lv_obj_t * hourHand;
+static lv_obj_t * minuteHand;
+static lv_obj_t * secondHand;
+static lv_point_precise_t hourHandPoints[2];
+static lv_point_precise_t minuteHandPoints[2];
+static lv_point_precise_t secondHandPoints[2];
+
+static void placerAiguille(lv_obj_t * aiguille, lv_point_precise_t * points,
+                           float angleDegres, int longueur)
+{
+  float angleRadians = (angleDegres - 90.0f) * PI / 180.0f;
+
+  points[0].x = CLOCK_CENTER;
+  points[0].y = CLOCK_CENTER;
+  points[1].x = CLOCK_CENTER + static_cast<int>(std::cos(angleRadians) * longueur);
+  points[1].y = CLOCK_CENTER + static_cast<int>(std::sin(angleRadians) * longueur);
+
+  lv_line_set_points(aiguille, points, 2);
+}
+
+static void mettreAJourHorlogeAnalogique(int heure, int minute, int seconde)
+{
+  if (hourHand == nullptr || minuteHand == nullptr || secondHand == nullptr) {
+    return;
+  }
+
+  float angleHeure = ((heure % 12) * 30.0f) + (minute * 0.5f);
+  float angleMinute = (minute * 6.0f) + (seconde * 0.1f);
+  float angleSeconde = seconde * 6.0f;
+
+  placerAiguille(hourHand, hourHandPoints, angleHeure, 20);
+  placerAiguille(minuteHand, minuteHandPoints, angleMinute, 28);
+  placerAiguille(secondHand, secondHandPoints, angleSeconde, 31);
+}
 
 void testLvgl()
 {
@@ -17,6 +57,38 @@ void testLvgl()
   lv_obj_set_style_text_font(timeLabel, &lv_font_montserrat_48, 0);
 #endif
   lv_obj_align(timeLabel, LV_ALIGN_CENTER, 0, -45);
+
+  analogClock = lv_obj_create(screen);
+  lv_obj_remove_flag(analogClock, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_size(analogClock, CLOCK_SIZE, CLOCK_SIZE);
+  lv_obj_set_style_radius(analogClock, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(analogClock, lv_color_white(), 0);
+  lv_obj_set_style_border_color(analogClock, lv_color_black(), 0);
+  lv_obj_set_style_border_width(analogClock, 2, 0);
+  lv_obj_set_style_pad_all(analogClock, 0, 0);
+  lv_obj_align(analogClock, LV_ALIGN_RIGHT_MID, -22, -45);
+
+  hourHand = lv_line_create(analogClock);
+  minuteHand = lv_line_create(analogClock);
+  secondHand = lv_line_create(analogClock);
+  lv_obj_set_size(hourHand, CLOCK_SIZE, CLOCK_SIZE);
+  lv_obj_set_size(minuteHand, CLOCK_SIZE, CLOCK_SIZE);
+  lv_obj_set_size(secondHand, CLOCK_SIZE, CLOCK_SIZE);
+  lv_obj_set_style_line_width(hourHand, 5, 0);
+  lv_obj_set_style_line_width(minuteHand, 3, 0);
+  lv_obj_set_style_line_width(secondHand, 1, 0);
+  lv_obj_set_style_line_color(hourHand, lv_color_black(), 0);
+  lv_obj_set_style_line_color(minuteHand, lv_color_black(), 0);
+  lv_obj_set_style_line_color(secondHand, lv_color_hex(0xCC2020), 0);
+  mettreAJourHorlogeAnalogique(0, 0, 0);
+
+  lv_obj_t * centerDot = lv_obj_create(analogClock);
+  lv_obj_remove_style_all(centerDot);
+  lv_obj_set_size(centerDot, 8, 8);
+  lv_obj_set_style_radius(centerDot, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(centerDot, lv_color_black(), 0);
+  lv_obj_set_style_bg_opa(centerDot, LV_OPA_COVER, 0);
+  lv_obj_center(centerDot);
 
   statusLabel = lv_label_create(screen);
   lv_label_set_text(statusLabel, "Attente des trames GPS...");
@@ -79,6 +151,7 @@ static bool traiterTrameGps(const char * trame)
   if (lvglLock(pdMS_TO_TICKS(20))) {
     lv_label_set_text(timeLabel, texteHeure);
     lv_label_set_text(statusLabel, (statutGps == 'A') ? "Fix GPS valide" : "Fix GPS non valide");
+    mettreAJourHorlogeAnalogique(heure, minute, seconde);
     lvglUnlock();
   }
 
