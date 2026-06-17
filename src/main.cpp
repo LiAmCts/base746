@@ -539,11 +539,58 @@ void testLvgl()
 
 static constexpr uint32_t GPS_BAUDRATE = 9600;
 static constexpr int GPS_LOCAL_UTC_OFFSET_HOURS = 2;
+static constexpr uint32_t SECONDS_PER_DAY = 24UL * 60UL * 60UL;
 
 // UART7 de la DISCO-F746NG : PF6 = RX7, PF7 = TX7.
 static HardwareSerial gpsSerial(PF6, PF7);
 static char gpsLine[128];
 static size_t gpsLineLen = 0;
+static bool clockSynchronized = false;
+static uint32_t referenceSecondOfDay = 0;
+static uint32_t lastDisplayedSecondOfDay = UINT32_MAX;
+static TickType_t referenceTick = 0;
+
+static void afficherHeureDepuisSecondes(uint32_t secondOfDay, const char * statusText)
+{
+  int heure = static_cast<int>(secondOfDay / 3600UL);
+  int minute = static_cast<int>((secondOfDay / 60UL) % 60UL);
+  int seconde = static_cast<int>(secondOfDay % 60UL);
+
+  char texteHeure[16];
+  std::snprintf(texteHeure, sizeof(texteHeure), "%02d:%02d:%02d", heure, minute, seconde);
+
+  if (lvglLock(pdMS_TO_TICKS(20))) {
+    lv_label_set_text(timeLabel, texteHeure);
+    lv_label_set_text(statusLabel, statusText);
+    mettreAJourHorlogeAnalogique(heure, minute, seconde);
+    lvglUnlock();
+  }
+}
+
+static uint32_t calculerSecondeLocale()
+{
+  TickType_t elapsedTicks = xTaskGetTickCount() - referenceTick;
+  uint32_t elapsedSeconds = static_cast<uint32_t>(
+    (static_cast<uint64_t>(elapsedTicks) * portTICK_PERIOD_MS) / 1000ULL
+  );
+
+  return (referenceSecondOfDay + elapsedSeconds) % SECONDS_PER_DAY;
+}
+
+static void mettreAJourHorlogeComptee()
+{
+  if (!clockSynchronized) {
+    return;
+  }
+
+  uint32_t currentSecondOfDay = calculerSecondeLocale();
+  if (currentSecondOfDay == lastDisplayedSecondOfDay) {
+    return;
+  }
+
+  lastDisplayedSecondOfDay = currentSecondOfDay;
+  afficherHeureDepuisSecondes(currentSecondOfDay, "Horloge synchronisee GPS");
+}
 
 static bool traiterTrameGps(const char * trame)
 {
@@ -570,15 +617,14 @@ static bool traiterTrameGps(const char * trame)
   const char * virguleApresHeure = std::strchr(heureUtc, ',');
   char statutGps = (virguleApresHeure != nullptr) ? virguleApresHeure[1] : 'V';
 
-  char texteHeure[16];
-  std::snprintf(texteHeure, sizeof(texteHeure), "%02d:%02d:%02d", heure, minute, seconde);
+  referenceSecondOfDay = static_cast<uint32_t>((heure * 3600) + (minute * 60) + seconde);
+  referenceTick = xTaskGetTickCount();
+  clockSynchronized = true;
+  lastDisplayedSecondOfDay = referenceSecondOfDay;
 
-  if (lvglLock(pdMS_TO_TICKS(20))) {
-    lv_label_set_text(timeLabel, texteHeure);
-    lv_label_set_text(statusLabel, (statutGps == 'A') ? "Fix GPS valide" : "Fix GPS non valide");
-    mettreAJourHorlogeAnalogique(heure, minute, seconde);
-    lvglUnlock();
-  }
+  afficherHeureDepuisSecondes(referenceSecondOfDay,
+                              (statutGps == 'A') ? "Synchronisation GPS valide"
+                                                 : "Synchronisation GPS sans fix");
 
   return true;
 }
@@ -630,6 +676,9 @@ void myTask(void *pvParameters)
         gpsLineLen = 0;
       }
     }
+
+    // Fait avancer l'horloge entre deux trames GPS.
+    mettreAJourHorlogeComptee();
 
     // Endort la tâche pour obtenir une exécution toutes les 200 ms.
     vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(200));
